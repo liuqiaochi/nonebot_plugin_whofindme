@@ -15,6 +15,7 @@ from typing import List, Tuple
 from nonebot import get_driver, on_message
 from nonebot.adapters.onebot.v11 import Bot, Event as OBEvent
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message, MessageSegment
+from nonebot.exception import FinishedException, PausedException, RejectedException
 
 from .config import (
     BOT_QQ,
@@ -177,7 +178,9 @@ async def _who(bot: Bot, event: GroupMessageEvent) -> None:
 
         # 回退：单条纯文本消息（图片以链接形式附带，避免图片下载导致超时）
         await who_matcher.finish(_build_plain(summary, rows))
-    except Exception as exc:  # 任何意外都优雅降级，绝不裸崩
+    except (FinishedException, PausedException, RejectedException):
+        raise  # finish/pause/reject 是正常的控制流信号，必须放行，否则会重复发送
+    except Exception as exc:  # 其它意外才优雅降级，绝不裸崩
         print(f"[whofindme] 查询异常，已降级: {exc}")
         await who_matcher.finish("查询时出现异常，请稍后重试。")
 
