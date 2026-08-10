@@ -75,8 +75,17 @@ async def _record(event: GroupMessageEvent) -> None:
     if event.user_id == bot_qq:
         return
 
+    # 是否引用(回复)了某条消息 —— 仅用于日志/排查，不影响记录逻辑本身
+    has_reply = bool(event.message["reply"]) or getattr(event, "reply", None) is not None
     at_segments = event.message["at"]
+    print(
+        f"[whofindme][record] group={event.group_id} sender={event.user_id} "
+        f"has_reply={has_reply} at_count={len(at_segments)}"
+    )
+
     if not at_segments:
+        # 消息里没有 @ 任何人（引用本身不算 @），不记录
+        print("[whofindme][record] 未检测到 @ 段，跳过（引用消息若未 @ 任何人则不记录）")
         return
 
     targets: set[int] = set()
@@ -91,9 +100,14 @@ async def _record(event: GroupMessageEvent) -> None:
         # 忽略 @全体 与 @机器人
         if qq != bot_qq:
             targets.add(qq)
+    print(f"[whofindme][record] 解析到的 @对象 targets={targets}")
     if not targets:
+        print("[whofindme][record] 无有效 @对象（均为 @全体/@机器人），跳过")
         return
 
+    # 仅提取发送人自己发送的内容（文本 + 图片）。
+    # 注意：这里只读取 event.message 的 text/image 段，故意不读取 event.reply，
+    # 因此被引用的历史消息内容不会被记录进来（满足"忽略引用内容"的需求）。
     text = event.message.extract_plain_text().strip()
     images: List[str] = []
     for seg in event.message["image"]:
@@ -117,6 +131,10 @@ async def _record(event: GroupMessageEvent) -> None:
             images=json.dumps(images, ensure_ascii=False),
             created_at=now,
         )
+    print(
+        f"[whofindme][record] 已记录 {len(targets)} 条 "
+        f"(text_len={len(text)}, img_count={len(images)}, 已忽略引用内容)"
+    )
 
 
 # --------------------------------------------------------------------------- #
