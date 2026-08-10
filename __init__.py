@@ -97,7 +97,11 @@ async def _record(event: GroupMessageEvent) -> None:
     images: List[str] = []
     for seg in event.message["image"]:
         url = seg.data.get("url") or seg.data.get("file")
-        if url:
+        # NapCat/NTQQ 有时把 url/file 包成 dict，取出其中的字符串地址；
+        # 只保留字符串，避免把 dict/非字符串写进 images，导致后续 json.loads 失败。
+        if isinstance(url, dict):
+            url = url.get("url") or url.get("file")
+        if isinstance(url, str) and url:
             images.append(url)
 
     sender_name = event.sender.card or event.sender.nickname or str(event.user_id)
@@ -144,34 +148,65 @@ async def _send_forward(bot: Bot, group_id: int, nodes: List[MessageSegment]) ->
 async def _who(bot: Bot, event: GroupMessageEvent) -> None:
     if event.message_type != "group":
         return
-    since = int(time.time()) - QUERY_HOURS * 3600
+    try:
+        since = int(time.time()) - QUERY_HOURS * 3600
 
-    total = await db.count(event.group_id, event.user_id, since)
-    if total == 0:
-        await who_matcher.finish(f"最近 {QUERY_HOURS} 小时内，本群没有人 @ 你~")
+        total = await db.count(event.group_id, event.user_id, since)
+        if total == 0:
+            await who_matcher.finish(f"最近 {QUERY_HOURS} 小时内，本群没有人 @ 你~")
 
-    # 取最近的 MAX_RESULTS 条（db.query 已按时间倒序）
-    rows: List[Tuple[str, int, str, str, int]] = await db.query(
-        event.group_id, event.user_id, since, limit=MAX_RESULTS
-    )
+        # 取最近的 MAX_RESULTS 条（db.query 已按时间倒序）
+        rows: List[Tuple[str, int, str, str, int]] = await db.query(
+            event.group_id, event.user_id, since, limit=MAX_RESULTS
+        )
 
-    bot_qq = BOT_QQ if BOT_QQ is not None else event.self_id
+        bot_qq = BOT_QQ if BOT_QQ is not None else event.self_id
 
-    # 汇总文案
-    summary = f"最近 {QUERY_HOURS} 小时内，本群共有 {total} 条 @ 你的消息"
-    if total > len(rows):
-        summary += f"（以下仅显示最近的 {len(rows)} 条）"
+        # 汇总文案
+        summary = f"最近 {QUERY_HOURS} 小时内，本群共有 {total} 条 @ 你的消息"
+        if total > len(rows):
+            summary += f"（以下仅显示最近的 {len(rows)} 条）"
 
-    if USE_FORWARD:
+        if USE_FORWARD:
+            try:
+                nodes = _build_nodes(bot_qq, summary, rows)
+                await _send_forward(bot, event.group_id, nodes)
+                return
+            except Exception as exc:  # 合并转发失败，回退纯文本
+                print(f"[whofindme] 合并转发失败，回退纯文本消息: {exc}")
+
+        # 回退：单条纯文本消息（图片以链接形式附带，避免图片下载导致超时）
+        await who_matcher.finish(_build_plain(summary, rows))
+    except Exception as exc:  # 任何意外都优雅降级，绝不裸崩
+        print(f"[whofindme] 查询异常，已降级: {exc}")
+        await who_matcher.finish("查询时出现异常，请稍后重试。")
+
+
+def _safe_images(images_json: str) -> List[str]:
+    """防崩解析 images 字段。
+
+    兼容以下情况，确保任何脏数据都不会让查询崩溃：
+      - 合法 JSON 列表：["https://..."]
+      - 历史遗留的 Python 列表写法（单引号）：['https://...']
+      - 直接存了一个 URL 字符串
+      - 空值 / 非法内容 -> 返回 []
+    """
+    if not images_json:
+        return []
+    try:
+        data = json.loads(images_json)
+    except (json.JSONDecodeError, TypeError, ValueError):
         try:
-            nodes = _build_nodes(bot_qq, summary, rows)
-            await _send_forward(bot, event.group_id, nodes)
-            return
-        except Exception as exc:  # noqa: noqa  # 合并转发失败，回退纯文本
-            print(f"[whofindme] 合并转发失败，回退纯文本消息: {exc}")
+            import ast
 
-    # 回退：单条纯文本消息（图片以链接形式附带，避免图片下载导致超时）
-    await who_matcher.finish(_build_plain(summary, rows))
+            data = ast.literal_eval(images_json)
+        except Exception:
+            return []
+    if isinstance(data, list):
+        return [str(u) for u in data if u]
+    if isinstance(data, str) and data:
+        return [data]
+    return []
 
 
 def _build_nodes(
@@ -186,8 +221,10 @@ def _build_nodes(
         content = MessageSegment.text(f"[{t}] {sender_name}({sender_id}) @了你\n")
         if text:
             content += MessageSegment.text(text + "\n")
-        for url in json.loads(images_json):
-            content += MessageSegment.image(url)
+        for url in _safe_images(images_json):
+            # 合并转发中只渲染 http(s) 图片，本地路径/异常地址无法在转发里展示
+            if url.startswith(("http://", "https://")):
+                content += MessageSegment.image(url)
         nodes.append(
             MessageSegment.node_custom(
                 user_id=sender_id, nickname=sender_name, content=content
@@ -208,7 +245,7 @@ def _build_plain(
         msg += MessageSegment.text(f"{idx}. [{t}] {sender_name}({sender_id}) @了你\n")
         if text:
             msg += MessageSegment.text(f"    内容：{text}\n")
-        for url in json.loads(images_json):
+        for url in _safe_images(images_json):
             msg += MessageSegment.text(f"    [图片] {url}\n")
         msg += MessageSegment.text("\n")
     return msg
