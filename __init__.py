@@ -20,7 +20,7 @@ from nonebot.exception import FinishedException, PausedException, RejectedExcept
 
 from .config import (
     BOT_QQ,
-    DB_PATH,
+    DATA_DIR,
     KEEP_DAYS,
     MAX_RESULTS,
     QUERY_HOURS,
@@ -28,7 +28,7 @@ from .config import (
 )
 from .db import Database
 
-db = Database(DB_PATH)
+db = Database(DATA_DIR)
 driver = get_driver()
 
 # 触发查询的指令（别名）

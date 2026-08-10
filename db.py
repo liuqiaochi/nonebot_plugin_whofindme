@@ -1,40 +1,66 @@
-"""SQLite 数据访问层（基于 aiosqlite，异步）。"""
-import json
+"""SQLite 数据访问层（基于 aiosqlite，异步）。
+
+存储结构：数据目录下按群分文件，每个群一个独立的 .db 文件：
+    <data_dir>/<group_id>.db
+不同群的数据物理隔离，便于备份、清理与迁移。
+"""
+import asyncio
 import os
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import aiosqlite
 
 
 class Database:
-    def __init__(self, path: str) -> None:
-        self.path = path
-        # 确保数据库所在目录存在
-        directory = os.path.dirname(os.path.abspath(path))
-        os.makedirs(directory, exist_ok=True)
-        self.conn: Optional[aiosqlite.Connection] = None
+    def __init__(self, data_dir: str) -> None:
+        self.data_dir = os.path.abspath(data_dir)
+        # 确保数据总目录存在
+        os.makedirs(self.data_dir, exist_ok=True)
+        # 每个群一个连接，懒加载并缓存（key = group_id）
+        self._conns: Dict[int, aiosqlite.Connection] = {}
+        self._lock: Optional[asyncio.Lock] = None
+
+    def _group_path(self, group_id: int) -> str:
+        return os.path.join(self.data_dir, f"{group_id}.db")
 
     async def init(self) -> None:
-        self.conn = await aiosqlite.connect(self.path)
-        await self.conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS records (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                group_id    INTEGER NOT NULL,
-                sender_id   INTEGER NOT NULL,
-                sender_name TEXT    NOT NULL,
-                target_id   INTEGER NOT NULL,
-                text        TEXT    NOT NULL DEFAULT '',
-                images      TEXT    NOT NULL DEFAULT '[]',
-                created_at  INTEGER NOT NULL
+        # 目录已在 __init__ 创建；连接按群懒加载，这里仅初始化锁
+        self._lock = asyncio.Lock()
+
+    async def _get_conn(self, group_id: int) -> aiosqlite.Connection:
+        """获取（按需创建并建表）指定群的数据库连接，带缓存与并发保护。"""
+        conn = self._conns.get(group_id)
+        if conn is not None:
+            return conn
+        # 加锁避免并发时同一群重复建连
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        async with self._lock:
+            conn = self._conns.get(group_id)
+            if conn is not None:
+                return conn
+            conn = await aiosqlite.connect(self._group_path(group_id))
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS records (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    group_id    INTEGER NOT NULL,
+                    sender_id   INTEGER NOT NULL,
+                    sender_name TEXT    NOT NULL,
+                    target_id   INTEGER NOT NULL,
+                    text        TEXT    NOT NULL DEFAULT '',
+                    images      TEXT    NOT NULL DEFAULT '[]',
+                    created_at  INTEGER NOT NULL
+                )
+                """
             )
-            """
-        )
-        await self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_records_group_target "
-            "ON records (group_id, target_id, created_at)"
-        )
-        await self.conn.commit()
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_records_group_target "
+                "ON records (group_id, target_id, created_at)"
+            )
+            await conn.commit()
+            self._conns[group_id] = conn
+            return conn
 
     async def add(
         self,
@@ -47,20 +73,20 @@ class Database:
         images: str,
         created_at: int,
     ) -> None:
-        assert self.conn is not None
-        await self.conn.execute(
+        conn = await self._get_conn(group_id)
+        await conn.execute(
             "INSERT INTO records "
             "(group_id, sender_id, sender_name, target_id, text, images, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (group_id, sender_id, sender_name, target_id, text, images, created_at),
         )
-        await self.conn.commit()
+        await conn.commit()
 
     async def query(
         self, group_id: int, target_id: int, since: int, limit: int = 50
     ) -> List[Tuple[str, int, str, str, int]]:
-        assert self.conn is not None
-        async with self.conn.execute(
+        conn = await self._get_conn(group_id)
+        async with conn.execute(
             "SELECT sender_name, sender_id, text, images, created_at "
             "FROM records "
             "WHERE group_id = ? AND target_id = ? AND created_at >= ? "
@@ -71,8 +97,8 @@ class Database:
 
     async def count(self, group_id: int, target_id: int, since: int) -> int:
         """统计时间窗内 @ 了 target 的总条数（用于提示是否触达上限）。"""
-        assert self.conn is not None
-        async with self.conn.execute(
+        conn = await self._get_conn(group_id)
+        async with conn.execute(
             "SELECT COUNT(*) FROM records "
             "WHERE group_id = ? AND target_id = ? AND created_at >= ?",
             (group_id, target_id, since),
@@ -81,11 +107,24 @@ class Database:
             return int(row[0]) if row else 0
 
     async def delete_old(self, before: int) -> None:
-        assert self.conn is not None
-        await self.conn.execute("DELETE FROM records WHERE created_at < ?", (before,))
-        await self.conn.commit()
+        """清理所有群文件中超过保留期的记录（遍历数据目录下的 .db 文件）。"""
+        for fname in os.listdir(self.data_dir):
+            if not fname.endswith(".db"):
+                continue
+            path = os.path.join(self.data_dir, fname)
+            try:
+                conn = await aiosqlite.connect(path)
+                try:
+                    await conn.execute(
+                        "DELETE FROM records WHERE created_at < ?", (before,)
+                    )
+                    await conn.commit()
+                finally:
+                    await conn.close()
+            except Exception as exc:  # noqa: BLE001
+                print(f"[whofindme] 清理群文件 {fname} 失败: {exc}")
 
     async def close(self) -> None:
-        if self.conn is not None:
-            await self.conn.close()
-            self.conn = None
+        for conn in self._conns.values():
+            await conn.close()
+        self._conns.clear()

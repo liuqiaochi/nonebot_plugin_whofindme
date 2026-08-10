@@ -3,6 +3,7 @@
 所有配置项均可在 NoneBot 的全局配置（.env / 环境变量 / 项目 config.py）中覆盖，
 未配置时使用下方默认值。
 """
+import os
 from typing import Optional
 
 from nonebot import get_driver
@@ -14,8 +15,18 @@ _config = get_driver().config
 _raw = getattr(_config, "plugin_whofindme_bot_qq", None)
 BOT_QQ: Optional[int] = int(_raw) if _raw not in (None, "") else None
 
-# SQLite 数据库文件路径（目录会自动创建）
-DB_PATH: str = getattr(_config, "plugin_whofindme_data_path", "./data/whofindme.db")
+# SQLite 数据目录（每个群一个独立 .db 文件：<data_dir>/<group_id>.db）。
+# 优先读取 plugin_whofindme_data_dir；若未配置但配置了旧版 plugin_whofindme_data_path，
+# 则从其路径推导目录（兼容历史配置，升级后不丢失数据位置）。
+_raw_dir = getattr(_config, "plugin_whofindme_data_dir", None)
+if not _raw_dir:
+    _legacy = getattr(_config, "plugin_whofindme_data_path", "./data/whofindme.db")
+    _raw_dir = (
+        os.path.dirname(os.path.abspath(_legacy))
+        if str(_legacy).endswith(".db")
+        else _legacy
+    )
+DATA_DIR: str = _raw_dir
 
 # 记录保留天数，超过则自动删除（默认 7 天）
 KEEP_DAYS: int = int(getattr(_config, "plugin_whofindme_keep_days", 7))

@@ -39,7 +39,8 @@
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
 | `plugin_whofindme_bot_qq` | 留空（自动检测） | 机器人自身 QQ，**默认无需配置**，自动取连接 self_id；如需强制指定（如多 bot）可填数字 |
-| `plugin_whofindme_data_path` | `./data/whofindme.db` | SQLite 数据库文件路径（目录自动创建） |
+| `plugin_whofindme_data_dir` | `./data/whofindme` | SQLite 数据目录，**每个群一个独立 .db 文件**（`<data_dir>/<group_id>.db`），不同群数据物理隔离；目录自动创建 |
+| `plugin_whofindme_data_path` _(旧版，兼容)_ | `./data/whofindme.db` | 旧版单文件路径配置；未设 `data_dir` 时，从其路径推导目录以兼容历史数据 |
 | `plugin_whofindme_keep_days` | `7` | 记录保留天数，超过自动删除 |
 | `plugin_whofindme_query_hours` | `24` | 查询回溯的小时数 |
 | `plugin_whofindme_max_results` | `50` | 合并转发最多展示最近多少条记录 |
@@ -49,7 +50,7 @@
 
 ```env
 # plugin_whofindme_bot_qq=你的QQ  # 通常不用写，插件会自动识别
-plugin_whofindme_data_path=./data/whofindme.db
+# plugin_whofindme_data_dir=./data/whofindme  # 数据目录（默认），每群一个 .db 文件
 plugin_whofindme_keep_days=7
 plugin_whofindme_query_hours=24
 # plugin_whofindme_use_forward=true  # 若合并转发报错，改为 false
