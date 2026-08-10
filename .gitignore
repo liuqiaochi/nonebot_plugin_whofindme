@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+
+# Runtime data (SQLite database)
+data/
+*.db
+
+# Project internal memory (not part of the published plugin)
+.workbuddy/
+
+# Local env
+.env

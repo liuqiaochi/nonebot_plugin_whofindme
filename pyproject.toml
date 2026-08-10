@@ -1,0 +1,15 @@
+[project]
+name = "nonebot-plugin-whofindme"
+version = "0.1.0"
+description = "记录群里 @ 消息，并支持查询“谁 @ 了我”"
+authors = [{ name = "刘老肥" }]
+license = { text = "MIT" }
+requires-python = ">=3.9"
+dependencies = [
+    "aiosqlite>=0.18.0",
+    "nonebot2>=2.0.0",
+]
+
+[tool.nonebot]
+plugins = ["nonebot_plugin_whofindme"]
+distribution = "nonebot-plugin-whofindme"
