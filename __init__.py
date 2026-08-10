@@ -77,14 +77,17 @@ async def _record(event: GroupMessageEvent) -> None:
 
     # 被引用的那条消息（引用/回复事件）
     reply_obj = getattr(event, "reply", None)
-    has_reply = reply_obj is not None
+    # 兼容部分 adapter 把 reply 段留在 event.message 而非 event.reply 属性的情况
+    reply_seg_list = list(event.message["reply"])
+    has_reply = reply_obj is not None or bool(reply_seg_list)
 
     # @ 来源1：当前消息里直接带的 @ 段
     msg_at_segments: List[MessageSegment] = list(event.message["at"])
 
     # @ 来源2：被引用消息里包含的 @ 段（用户要求：引用事件若含 @ 也记录）
+    # 优先取 event.reply.message；若 adapter 把 reply 留在 message 段里、无完整内容，则仅记录当前消息
     reply_at_segments: List[MessageSegment] = []
-    if has_reply:
+    if reply_obj is not None:
         reply_msg = getattr(reply_obj, "message", None)
         if reply_msg is not None:
             try:
@@ -92,10 +95,16 @@ async def _record(event: GroupMessageEvent) -> None:
             except Exception:  # noqa: BLE001
                 reply_at_segments = []
 
+    # 调试：把 event.message 的完整段类型列表 + raw_message 打出来，
+    # 定位 NapCat 在"引用+@"场景下到底把 reply / at 段放在哪（或退化成了文本 @昵称）。
+    seg_types = [s.type for s in event.message]
     print(
         f"[whofindme][record] group={event.group_id} sender={event.user_id} "
-        f"has_reply={has_reply} msg_at={len(msg_at_segments)} reply_at={len(reply_at_segments)}"
+        f"event.reply={reply_obj!r} has_reply={has_reply} "
+        f"msg_at={len(msg_at_segments)} reply_seg_in_msg={reply_seg_list} reply_at={len(reply_at_segments)}"
     )
+    print(f"[whofindme][record] message段类型列表={seg_types}")
+    print(f"[whofindme][record] raw_message(前120)={event.raw_message[:120]!r}")
 
     targets: set[int] = set()
 
