@@ -16,7 +16,14 @@ from nonebot import get_driver, on_message
 from nonebot.adapters.onebot.v11 import Bot, Event as OBEvent
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message, MessageSegment
 
-from .config import BOT_QQ, DB_PATH, KEEP_DAYS, MAX_RESULTS, QUERY_HOURS
+from .config import (
+    BOT_QQ,
+    DB_PATH,
+    KEEP_DAYS,
+    MAX_RESULTS,
+    QUERY_HOURS,
+    USE_FORWARD,
+)
 from .db import Database
 
 db = Database(DB_PATH)
@@ -150,14 +157,30 @@ async def _who(bot: Bot, event: GroupMessageEvent) -> None:
 
     bot_qq = BOT_QQ if BOT_QQ is not None else event.self_id
 
-    # 汇总节点
+    # 汇总文案
     summary = f"最近 {QUERY_HOURS} 小时内，本群共有 {total} 条 @ 你的消息"
     if total > len(rows):
         summary += f"（以下仅显示最近的 {len(rows)} 条）"
+
+    if USE_FORWARD:
+        try:
+            nodes = _build_nodes(bot_qq, summary, rows)
+            await _send_forward(bot, event.group_id, nodes)
+            return
+        except Exception as exc:  # noqa: noqa  # 合并转发失败，回退纯文本
+            print(f"[whofindme] 合并转发失败，回退纯文本消息: {exc}")
+
+    # 回退：单条纯文本消息（图片以链接形式附带，避免图片下载导致超时）
+    await who_matcher.finish(_build_plain(summary, rows))
+
+
+def _build_nodes(
+    bot_qq: int, summary: str, rows: List[Tuple[str, int, str, str, int]]
+) -> List[MessageSegment]:
+    """构造合并转发节点列表。"""
     nodes: List[MessageSegment] = [
         MessageSegment.node_custom(user_id=bot_qq, nickname="查询汇总", content=summary)
     ]
-
     for sender_name, sender_id, text, images_json, created_at in rows:
         t = time.strftime("%m-%d %H:%M", time.localtime(created_at))
         content = MessageSegment.text(f"[{t}] {sender_name}({sender_id}) @了你\n")
@@ -170,26 +193,22 @@ async def _who(bot: Bot, event: GroupMessageEvent) -> None:
                 user_id=sender_id, nickname=sender_name, content=content
             )
         )
+    return nodes
 
-    try:
-        # 合并转发：将多条记录合并为一条转发消息，避免刷屏
-        await _send_forward(bot, event.group_id, nodes)
-    except Exception as exc:  # noqa: BLE001
-        # 客户端不支持合并转发时，回退为单条普通消息
-        print(f"[whofindme] 合并转发失败，回退普通消息: {exc}")
-        plain = MessageSegment.text(summary + "\n\n")
-        for idx, (sender_name, sender_id, text, images_json, created_at) in enumerate(
-            rows, 1
-        ):
-            t = time.strftime("%m-%d %H:%M", time.localtime(created_at))
-            plain += MessageSegment.text(
-                f"{idx}. [{t}] {sender_name}({sender_id}) @了你\n"
-            )
-            if text:
-                plain += MessageSegment.text(f"    内容：{text}\n")
-            for url in json.loads(images_json):
-                plain += MessageSegment.image(url)
-            plain += MessageSegment.text("\n")
-        await who_matcher.send(plain)
 
-    await who_matcher.finish()
+def _build_plain(
+    summary: str, rows: List[Tuple[str, int, str, str, int]]
+) -> Message:
+    """构造纯文本回退消息：单条、图片以链接形式展示，避免触发图片下载超时。"""
+    msg = MessageSegment.text(summary + "\n\n")
+    for idx, (sender_name, sender_id, text, images_json, created_at) in enumerate(
+        rows, 1
+    ):
+        t = time.strftime("%m-%d %H:%M", time.localtime(created_at))
+        msg += MessageSegment.text(f"{idx}. [{t}] {sender_name}({sender_id}) @了你\n")
+        if text:
+            msg += MessageSegment.text(f"    内容：{text}\n")
+        for url in json.loads(images_json):
+            msg += MessageSegment.text(f"    [图片] {url}\n")
+        msg += MessageSegment.text("\n")
+    return msg

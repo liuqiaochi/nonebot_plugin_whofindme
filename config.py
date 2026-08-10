@@ -25,3 +25,13 @@ QUERY_HOURS: int = int(getattr(_config, "plugin_whofindme_query_hours", 24))
 
 # 合并转发最多展示最近多少条（默认 50，防止单条回复过长刷屏）
 MAX_RESULTS: int = int(getattr(_config, "plugin_whofindme_max_results", 50))
+
+# 是否使用合并转发形式回复（默认 True）。
+# 部分 OneBot 实现（如某些 NapCat + NTQQ 组合）在发送带图片的合并转发时会失败，
+# 若出现 retcode=1200 / 发送超时，可将其设为 false，直接以单条纯文本消息回复（更稳）。
+USE_FORWARD: bool = str(getattr(_config, "plugin_whofindme_use_forward", "true")).lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)

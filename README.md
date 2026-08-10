@@ -43,6 +43,7 @@
 | `plugin_whofindme_keep_days` | `7` | 记录保留天数，超过自动删除 |
 | `plugin_whofindme_query_hours` | `24` | 查询回溯的小时数 |
 | `plugin_whofindme_max_results` | `50` | 合并转发最多展示最近多少条记录 |
+| `plugin_whofindme_use_forward` | `true` | 是否使用合并转发回复。部分 NapCat + NTQQ 组合发送带图合并转发会报 `retcode=1200` / 超时，此时设为 `false`，回退为单条纯文本消息（图片以链接呈现），更稳定 |
 
 机器人 QQ 默认**自动检测**，正常情况下无需任何配置即可使用。示例 `.env`（仅当你需要覆盖默认值时才写）：
 
@@ -51,6 +52,7 @@
 plugin_whofindme_data_path=./data/whofindme.db
 plugin_whofindme_keep_days=7
 plugin_whofindme_query_hours=24
+# plugin_whofindme_use_forward=true  # 若合并转发报错，改为 false
 ```
 
 ## 使用
