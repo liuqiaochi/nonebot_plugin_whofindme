@@ -12,7 +12,7 @@ import json
 import time
 from typing import List, Tuple
 
-from nonebot import on_message, on_shutdown, on_startup
+from nonebot import get_driver, on_message
 from nonebot.adapters.onebot.v11 import Bot, Event as OBEvent
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message, MessageSegment
 
@@ -20,6 +20,7 @@ from .config import BOT_QQ, DB_PATH, KEEP_DAYS, MAX_RESULTS, QUERY_HOURS
 from .db import Database
 
 db = Database(DB_PATH)
+driver = get_driver()
 
 # 触发查询的指令（别名）
 COMMANDS = {"谁@我", "谁艾特我", "谁找我"}
@@ -28,13 +29,13 @@ COMMANDS = {"谁@我", "谁艾特我", "谁找我"}
 # --------------------------------------------------------------------------- #
 # 启动 / 关闭
 # --------------------------------------------------------------------------- #
-@on_startup
+@driver.on_startup
 async def _startup() -> None:
     await db.init()
     asyncio.create_task(_cleanup_loop())
 
 
-@on_shutdown
+@driver.on_shutdown
 async def _shutdown() -> None:
     await db.close()
 
