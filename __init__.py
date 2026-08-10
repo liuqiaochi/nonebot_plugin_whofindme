@@ -9,6 +9,7 @@
 """
 import asyncio
 import json
+import re
 import time
 from typing import List, Tuple
 
@@ -32,6 +33,12 @@ driver = get_driver()
 
 # 触发查询的指令（别名）
 COMMANDS = {"谁@我", "谁艾特我", "谁找我"}
+
+# 从 raw_message 兜底提取 @ 的 QQ 号。
+# 背景：NapCat/NTQQ 在「引用 + @」场景下，常把 at 留在原始 CQ 串里
+#（形如 [CQ:at,qq=123456]），却不把它解析成 event.message 的 at 段；
+# 此时仅从 event.message["at"] 取会漏掉，需用正则从 raw_message 兜底。
+_CQ_AT_RE = re.compile(r"\[CQ:at,qq=(\d+)\]")
 
 
 # --------------------------------------------------------------------------- #
@@ -81,51 +88,66 @@ async def _record(event: GroupMessageEvent) -> None:
     reply_seg_list = list(event.message["reply"])
     has_reply = reply_obj is not None or bool(reply_seg_list)
 
-    # @ 来源1：当前消息里直接带的 @ 段
-    msg_at_segments: List[MessageSegment] = list(event.message["at"])
-
-    # @ 来源2：被引用消息里包含的 @ 段（用户要求：引用事件若含 @ 也记录）
-    # 优先取 event.reply.message；若 adapter 把 reply 留在 message 段里、无完整内容，则仅记录当前消息
-    reply_at_segments: List[MessageSegment] = []
-    if reply_obj is not None:
-        reply_msg = getattr(reply_obj, "message", None)
-        if reply_msg is not None:
-            try:
-                reply_at_segments = list(reply_msg["at"])
-            except Exception:  # noqa: BLE001
-                reply_at_segments = []
-
-    # 调试：把 event.message 的完整段类型列表 + raw_message 打出来，
-    # 定位 NapCat 在"引用+@"场景下到底把 reply / at 段放在哪（或退化成了文本 @昵称）。
-    seg_types = [s.type for s in event.message]
-    print(
-        f"[whofindme][record] group={event.group_id} sender={event.user_id} "
-        f"event.reply={reply_obj!r} has_reply={has_reply} "
-        f"msg_at={len(msg_at_segments)} reply_seg_in_msg={reply_seg_list} reply_at={len(reply_at_segments)}"
-    )
-    print(f"[whofindme][record] message段类型列表={seg_types}")
-    print(f"[whofindme][record] raw_message(前120)={event.raw_message[:120]!r}")
-
-    targets: set[int] = set()
-
-    def _collect(segs: List[MessageSegment]) -> None:
+    def _qq_of(segs) -> List[int]:
+        out: List[int] = []
         for seg in segs:
             qq = seg.data.get("qq")
             if not qq:
                 continue
             try:
-                qq = int(qq)
+                out.append(int(qq))
             except (TypeError, ValueError):
                 continue
-            # 忽略 @全体 与 @机器人
-            if qq != bot_qq:
-                targets.add(qq)
+        return out
 
-    _collect(msg_at_segments)
-    _collect(reply_at_segments)
-    print(f"[whofindme][record] 合并 @对象 targets={targets}（含被引用消息中的 @）")
+    # @ 来源1：当前消息里直接带的 @ 段（标准情况）
+    msg_at_qq = _qq_of(event.message["at"])
+
+    # @ 来源2：从 raw_message 兜底提取。
+    # NapCat/NTQQ 在「引用 + @」场景下，常把 at 留在原始 CQ 串里
+    #（[CQ:at,qq=数字]），却不解析成 event.message 的 at 段；
+    # 正则兜底确保一定能拿到被 @ 的 QQ（@全体 为 qq=all/0，正则 \d+ 不匹配，自动忽略）。
+    raw = getattr(event, "raw_message", "") or ""
+    raw_at_qq = [int(m) for m in _CQ_AT_RE.findall(raw)]
+
+    # @ 来源3：被引用消息里包含的 @ 段（用户要求：引用事件若含 @ 也记录）
+    reply_at_qq: List[int] = []
+    if reply_obj is not None:
+        reply_msg = getattr(reply_obj, "message", None)
+        if reply_msg is not None:
+            try:
+                reply_at_qq = _qq_of(reply_msg["at"])
+            except Exception:  # noqa: BLE001
+                reply_at_qq = []
+
+    # 调试：把真实结构摊开，便于定位 NapCat 把 at/reply 放在哪
+    seg_types = [s.type for s in event.message]
+    print(
+        f"[whofindme][record] group={event.group_id} sender={event.user_id} "
+        f"has_reply={has_reply} msg_at={len(msg_at_qq)} raw_at={len(raw_at_qq)} "
+        f"reply_at={len(reply_at_qq)}"
+    )
+    print(f"[whofindme][record] message段类型列表={seg_types}")
+    print(f"[whofindme][record] raw_message(前120)={raw[:120]!r}")
+
+    # 合并三个来源的 @ 对象，忽略 @全体 与 @机器人
+    targets: set[int] = set()
+    for qq in msg_at_qq + raw_at_qq + reply_at_qq:
+        if qq != bot_qq:
+            targets.add(qq)
+    src_parts = []
+    if msg_at_qq:
+        src_parts.append(f"msg_seg={msg_at_qq}")
+    if raw_at_qq:
+        src_parts.append(f"raw={raw_at_qq}")
+    if reply_at_qq:
+        src_parts.append(f"reply={reply_at_qq}")
+    print(
+        f"[whofindme][record] 合并 @对象 targets={targets} "
+        f"（来源：{', '.join(src_parts) or '无'}）"
+    )
     if not targets:
-        print("[whofindme][record] 无任何有效 @对象（当前消息与被引用消息均无），跳过")
+        print("[whofindme][record] 无有效 @对象，跳过")
         return
 
     # 仅记录发送人当前携带的内容（文本 + 图片），故意不读取 event.reply 的文本/图片，
