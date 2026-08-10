@@ -75,38 +75,51 @@ async def _record(event: GroupMessageEvent) -> None:
     if event.user_id == bot_qq:
         return
 
-    # 是否引用(回复)了某条消息 —— 仅用于日志/排查，不影响记录逻辑本身
-    has_reply = bool(event.message["reply"]) or getattr(event, "reply", None) is not None
-    at_segments = event.message["at"]
+    # 被引用的那条消息（引用/回复事件）
+    reply_obj = getattr(event, "reply", None)
+    has_reply = reply_obj is not None
+
+    # @ 来源1：当前消息里直接带的 @ 段
+    msg_at_segments: List[MessageSegment] = list(event.message["at"])
+
+    # @ 来源2：被引用消息里包含的 @ 段（用户要求：引用事件若含 @ 也记录）
+    reply_at_segments: List[MessageSegment] = []
+    if has_reply:
+        reply_msg = getattr(reply_obj, "message", None)
+        if reply_msg is not None:
+            try:
+                reply_at_segments = list(reply_msg["at"])
+            except Exception:  # noqa: BLE001
+                reply_at_segments = []
+
     print(
         f"[whofindme][record] group={event.group_id} sender={event.user_id} "
-        f"has_reply={has_reply} at_count={len(at_segments)}"
+        f"has_reply={has_reply} msg_at={len(msg_at_segments)} reply_at={len(reply_at_segments)}"
     )
 
-    if not at_segments:
-        # 消息里没有 @ 任何人（引用本身不算 @），不记录
-        print("[whofindme][record] 未检测到 @ 段，跳过（引用消息若未 @ 任何人则不记录）")
-        return
-
     targets: set[int] = set()
-    for seg in at_segments:
-        qq = seg.data.get("qq")
-        if not qq:
-            continue
-        try:
-            qq = int(qq)
-        except (TypeError, ValueError):
-            continue
-        # 忽略 @全体 与 @机器人
-        if qq != bot_qq:
-            targets.add(qq)
-    print(f"[whofindme][record] 解析到的 @对象 targets={targets}")
+
+    def _collect(segs: List[MessageSegment]) -> None:
+        for seg in segs:
+            qq = seg.data.get("qq")
+            if not qq:
+                continue
+            try:
+                qq = int(qq)
+            except (TypeError, ValueError):
+                continue
+            # 忽略 @全体 与 @机器人
+            if qq != bot_qq:
+                targets.add(qq)
+
+    _collect(msg_at_segments)
+    _collect(reply_at_segments)
+    print(f"[whofindme][record] 合并 @对象 targets={targets}（含被引用消息中的 @）")
     if not targets:
-        print("[whofindme][record] 无有效 @对象（均为 @全体/@机器人），跳过")
+        print("[whofindme][record] 无任何有效 @对象（当前消息与被引用消息均无），跳过")
         return
 
-    # 仅提取发送人自己发送的内容（文本 + 图片）。
-    # 注意：这里只读取 event.message 的 text/image 段，故意不读取 event.reply，
+    # 仅记录发送人当前携带的内容（文本 + 图片），故意不读取 event.reply 的文本/图片，
     # 因此被引用的历史消息内容不会被记录进来（满足"忽略引用内容"的需求）。
     text = event.message.extract_plain_text().strip()
     images: List[str] = []
@@ -133,7 +146,8 @@ async def _record(event: GroupMessageEvent) -> None:
         )
     print(
         f"[whofindme][record] 已记录 {len(targets)} 条 "
-        f"(text_len={len(text)}, img_count={len(images)}, 已忽略引用内容)"
+        f"(text_len={len(text)}, img_count={len(images)}, "
+        f"内容仅来自发送人当前消息，已忽略引用内容)"
     )
 
 
