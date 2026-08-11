@@ -11,7 +11,7 @@ import asyncio
 import json
 import re
 import time
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from nonebot import get_driver, on_message
 from nonebot.adapters.onebot.v11 import Bot, Event as OBEvent
@@ -69,6 +69,44 @@ async def _cleanup_loop() -> None:
 # --------------------------------------------------------------------------- #
 # 记录 @ 消息
 # --------------------------------------------------------------------------- #
+def _extract_reply(reply_obj) -> Optional[Tuple[int, str, str]]:
+    """从 event.reply 提取 (sender_id, sender_name, content_json)。
+
+    被引用消息本体的段结构序列化为 content_json：
+      [{"t":"text","v":"..."}, {"t":"image"}, {"t":"video"}, {"t":"other","v":"record"}]
+    图片/视频/其他仅记类型（不存 URL，避免查询时触发下载），
+    文本记原始内容。无法获取引用内容时返回 None。
+    """
+    if reply_obj is None:
+        return None
+    sender = getattr(reply_obj, "sender", None)
+    sender_id = getattr(sender, "user_id", None) if sender else None
+    sender_name = (
+        getattr(sender, "card", None) or getattr(sender, "nickname", None)
+        if sender
+        else None
+    )
+    reply_msg = getattr(reply_obj, "message", None)
+    if reply_msg is None:
+        return None
+    seg_info: List[dict] = []
+    try:
+        segs = list(reply_msg)
+    except Exception:  # noqa: BLE001
+        segs = []
+    for seg in segs:
+        stype = getattr(seg, "type", None)
+        if stype == "text":
+            seg_info.append({"t": "text", "v": seg.data.get("text", "")})
+        elif stype == "image":
+            seg_info.append({"t": "image"})
+        elif stype == "video":
+            seg_info.append({"t": "video"})
+        else:
+            seg_info.append({"t": "other", "v": stype or "unknown"})
+    return (sender_id, sender_name, json.dumps(seg_info, ensure_ascii=False))
+
+
 record_matcher = on_message(priority=5, block=False)
 
 
@@ -150,8 +188,7 @@ async def _record(event: GroupMessageEvent) -> None:
         print("[whofindme][record] 无有效 @对象，跳过")
         return
 
-    # 仅记录发送人当前携带的内容（文本 + 图片），故意不读取 event.reply 的文本/图片，
-    # 因此被引用的历史消息内容不会被记录进来（满足"忽略引用内容"的需求）。
+    # 仅记录发送人当前携带的内容（文本 + 图片）
     text = event.message.extract_plain_text().strip()
     images: List[str] = []
     for seg in event.message["image"]:
@@ -162,6 +199,14 @@ async def _record(event: GroupMessageEvent) -> None:
             url = url.get("url") or url.get("file")
         if isinstance(url, str) and url:
             images.append(url)
+
+    # 单独保存被引用消息本体的段结构（图片/视频/文本/其他），供查询时呈现。
+    # 这是"被引用消息"的内容，与上面"发送人当前消息"是两条独立数据，互不混入。
+    reply_sender_id = reply_sender_name = reply_content = None
+    if reply_obj is not None:
+        _r = _extract_reply(reply_obj)
+        if _r is not None:
+            reply_sender_id, reply_sender_name, reply_content = _r
 
     sender_name = event.sender.card or event.sender.nickname or str(event.user_id)
     now = int(time.time())
@@ -174,11 +219,14 @@ async def _record(event: GroupMessageEvent) -> None:
             text=text,
             images=json.dumps(images, ensure_ascii=False),
             created_at=now,
+            reply_sender_id=reply_sender_id,
+            reply_sender_name=reply_sender_name,
+            reply_content=reply_content,
         )
     print(
         f"[whofindme][record] 已记录 {len(targets)} 条 "
         f"(text_len={len(text)}, img_count={len(images)}, "
-        f"内容仅来自发送人当前消息，已忽略引用内容)"
+        f"引用内容={'已保存' if reply_content else '无'})"
     )
 
 
@@ -283,24 +331,61 @@ def _safe_images(images_json: str) -> List[str]:
     return []
 
 
+def _render_reply(reply_sender_name: Optional[str], reply_content: Optional[str]) -> str:
+    """渲染被引用消息：图片->[图片] 视频->[视频] 文本->内容 其他->[其他]。
+
+    被引用消息本体已序列化为段结构（见 _extract_reply），这里按规则转成文本。
+    引用内容本身不存 URL，渲染也不触发任何下载，故与 simplify 无关。
+    """
+    if not reply_content:
+        return ""
+    try:
+        seg_info = json.loads(reply_content)
+    except Exception:  # noqa: BLE001
+        return ""
+    if not isinstance(seg_info, list):
+        return ""
+    parts: List[str] = []
+    for s in seg_info:
+        t = s.get("t")
+        if t == "text":
+            parts.append(s.get("v", ""))
+        elif t == "image":
+            parts.append("[图片]")
+        elif t == "video":
+            parts.append("[视频]")
+        else:
+            parts.append("[其他]")
+    body = "".join(parts)
+    who = reply_sender_name or "某人"
+    return f"└ 引用了 {who} 的消息：{body}\n"
+
+
 def _build_nodes(
     bot_qq: int,
     summary: str,
-    rows: List[Tuple[str, int, str, str, int]],
+    rows: List[Tuple],
     simplify: bool = False,
 ) -> List[MessageSegment]:
     """构造合并转发节点列表。
 
-    simplify=True 时：图片以纯文本 "[图片]" 呈现（不触发图片下载，规避
-    NapCat/NTQQ 合并转发下载图片超时），文本内容照常。用于合并转发原图
-    失败后的二次尝试。
-    注：当前数据模型仅持久化文本与图片，其他消息段类型（表情/语音/文件等）
-    在记录时未保存，故简化版中不会出现 "[其他]"。
+    simplify=True 时：发送人当前消息中的图片以纯文本 "[图片]" 呈现（不触发图片
+    下载，规避 NapCat/NTQQ 合并转发下载图片超时），文本照常。用于合并转发原图
+    失败后的二次尝试。被引用消息的渲染（图片->[图片] 等）始终是文本化，不下载。
     """
     nodes: List[MessageSegment] = [
         MessageSegment.node_custom(user_id=bot_qq, nickname="查询汇总", content=summary)
     ]
-    for sender_name, sender_id, text, images_json, created_at in rows:
+    for (
+        sender_name,
+        sender_id,
+        text,
+        images_json,
+        created_at,
+        reply_sender_id,
+        reply_sender_name,
+        reply_content,
+    ) in rows:
         t = time.strftime("%m-%d %H:%M", time.localtime(created_at))
         content = MessageSegment.text(f"[{t}] {sender_name}({sender_id}) @了你\n")
         if text:
@@ -311,6 +396,9 @@ def _build_nodes(
                 content += MessageSegment.text("[图片]\n")
             elif url.startswith(("http://", "https://")):
                 content += MessageSegment.image(url)
+        reply_line = _render_reply(reply_sender_name, reply_content)
+        if reply_line:
+            content += MessageSegment.text(reply_line)
         nodes.append(
             MessageSegment.node_custom(
                 user_id=sender_id, nickname=sender_name, content=content
@@ -320,18 +408,28 @@ def _build_nodes(
 
 
 def _build_plain(
-    summary: str, rows: List[Tuple[str, int, str, str, int]]
+    summary: str, rows: List[Tuple]
 ) -> Message:
     """构造纯文本回退消息：单条、图片以链接形式展示，避免触发图片下载超时。"""
     msg = MessageSegment.text(summary + "\n\n")
-    for idx, (sender_name, sender_id, text, images_json, created_at) in enumerate(
-        rows, 1
-    ):
+    for idx, (
+        sender_name,
+        sender_id,
+        text,
+        images_json,
+        created_at,
+        reply_sender_id,
+        reply_sender_name,
+        reply_content,
+    ) in enumerate(rows, 1):
         t = time.strftime("%m-%d %H:%M", time.localtime(created_at))
         msg += MessageSegment.text(f"{idx}. [{t}] {sender_name}({sender_id}) @了你\n")
         if text:
             msg += MessageSegment.text(f"    内容：{text}\n")
         for url in _safe_images(images_json):
             msg += MessageSegment.text(f"    [图片] {url}\n")
+        reply_line = _render_reply(reply_sender_name, reply_content)
+        if reply_line:
+            msg += MessageSegment.text("    " + reply_line)
         msg += MessageSegment.text("\n")
     return msg

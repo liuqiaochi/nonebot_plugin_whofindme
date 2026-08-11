@@ -43,14 +43,17 @@ class Database:
             await conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS records (
-                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    group_id    INTEGER NOT NULL,
-                    sender_id   INTEGER NOT NULL,
-                    sender_name TEXT    NOT NULL,
-                    target_id   INTEGER NOT NULL,
-                    text        TEXT    NOT NULL DEFAULT '',
-                    images      TEXT    NOT NULL DEFAULT '[]',
-                    created_at  INTEGER NOT NULL
+                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    group_id         INTEGER NOT NULL,
+                    sender_id        INTEGER NOT NULL,
+                    sender_name      TEXT    NOT NULL,
+                    target_id        INTEGER NOT NULL,
+                    text             TEXT    NOT NULL DEFAULT '',
+                    images           TEXT    NOT NULL DEFAULT '[]',
+                    created_at       INTEGER NOT NULL,
+                    reply_sender_id  INTEGER,
+                    reply_sender_name TEXT,
+                    reply_content    TEXT
                 )
                 """
             )
@@ -58,9 +61,25 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_records_group_target "
                 "ON records (group_id, target_id, created_at)"
             )
+            # 兼容旧库：补齐新增列（ALTER 仅在列不存在时执行，不重建表）
+            await self._ensure_columns(conn)
             await conn.commit()
             self._conns[group_id] = conn
             return conn
+
+    async def _ensure_columns(self, conn: "aiosqlite.Connection") -> None:
+        """为旧版本创建的表补齐新增列（向后兼容，无需重建表）。"""
+        async with conn.execute("PRAGMA table_info(records)") as cur:
+            existing = {row[1] for row in await cur.fetchall()}
+        for col, col_type in (
+            ("reply_sender_id", "INTEGER"),
+            ("reply_sender_name", "TEXT"),
+            ("reply_content", "TEXT"),
+        ):
+            if col not in existing:
+                await conn.execute(
+                    f"ALTER TABLE records ADD COLUMN {col} {col_type}"
+                )
 
     async def add(
         self,
@@ -72,22 +91,38 @@ class Database:
         text: str,
         images: str,
         created_at: int,
+        reply_sender_id: Optional[int] = None,
+        reply_sender_name: Optional[str] = None,
+        reply_content: Optional[str] = None,
     ) -> None:
         conn = await self._get_conn(group_id)
         await conn.execute(
             "INSERT INTO records "
-            "(group_id, sender_id, sender_name, target_id, text, images, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (group_id, sender_id, sender_name, target_id, text, images, created_at),
+            "(group_id, sender_id, sender_name, target_id, text, images, created_at, "
+            " reply_sender_id, reply_sender_name, reply_content) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                group_id,
+                sender_id,
+                sender_name,
+                target_id,
+                text,
+                images,
+                created_at,
+                reply_sender_id,
+                reply_sender_name,
+                reply_content,
+            ),
         )
         await conn.commit()
 
     async def query(
         self, group_id: int, target_id: int, since: int, limit: int = 50
-    ) -> List[Tuple[str, int, str, str, int]]:
+    ) -> List[Tuple]:
         conn = await self._get_conn(group_id)
         async with conn.execute(
-            "SELECT sender_name, sender_id, text, images, created_at "
+            "SELECT sender_name, sender_id, text, images, created_at, "
+            "reply_sender_id, reply_sender_name, reply_content "
             "FROM records "
             "WHERE group_id = ? AND target_id = ? AND created_at >= ? "
             "ORDER BY created_at DESC LIMIT ?",
