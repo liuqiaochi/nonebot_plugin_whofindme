@@ -41,7 +41,7 @@
 | --- | --- | --- |
 | `plugin_whofindme_bot_qq` | 留空（自动检测） | 机器人自身 QQ，**默认无需配置**，自动取连接 self_id；如需强制指定（如多 bot）可填数字 |
 | `plugin_whofindme_data_dir` | `./data/whofindme` | SQLite 数据目录，**每个群一个独立 .db 文件**（`<data_dir>/<group_id>.db`），不同群数据物理隔离；目录自动创建 |
-| `plugin_whofindme_data_path` _(旧版，兼容)_ | `./data/whofindme.db` | 旧版单文件路径配置；未设 `data_dir` 时，从其路径推导目录以兼容历史数据 |
+| `plugin_whofindme_data_path` _(旧版，兼容)_ | _(无)_ | 旧版单文件路径配置。**仅当用户显式自定义过非默认值**时才沿用其所在目录；默认情况下不再"取父目录"摊平到 `data/`，而是落在 `data/whofindme/` 专项目录 |
 | `plugin_whofindme_keep_days` | `7` | 记录保留天数，超过自动删除 |
 | `plugin_whofindme_query_hours` | `24` | 查询回溯的小时数 |
 | `plugin_whofindme_max_results` | `50` | 合并转发最多展示最近多少条记录 |

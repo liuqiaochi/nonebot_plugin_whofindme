@@ -16,16 +16,23 @@ _raw = getattr(_config, "plugin_whofindme_bot_qq", None)
 BOT_QQ: Optional[int] = int(_raw) if _raw not in (None, "") else None
 
 # SQLite 数据目录（每个群一个独立 .db 文件：<data_dir>/<group_id>.db）。
-# 优先读取 plugin_whofindme_data_dir；若未配置但配置了旧版 plugin_whofindme_data_path，
-# 则从其路径推导目录（兼容历史配置，升级后不丢失数据位置）。
+# 优先读取 plugin_whofindme_data_dir；未配置时使用默认 ./data/whofindme（专为本插件
+# 建立的子目录，避免把各群 db 散落到 data/ 根目录）。
+# 旧版 plugin_whofindme_data_path 仅作兼容：仅当用户显式自定义过非默认路径时，
+# 才沿用其所在目录；默认 ./data/whofindme.db 不再被"取父目录"摊平到 data/。
 _raw_dir = getattr(_config, "plugin_whofindme_data_dir", None)
 if not _raw_dir:
-    _legacy = getattr(_config, "plugin_whofindme_data_path", "./data/whofindme.db")
-    _raw_dir = (
-        os.path.dirname(os.path.abspath(_legacy))
-        if str(_legacy).endswith(".db")
-        else _legacy
-    )
+    _legacy = getattr(_config, "plugin_whofindme_data_path", None)
+    _default_legacy = "./data/whofindme.db"
+    if _legacy and _legacy != _default_legacy:
+        # 用户曾显式自定义旧版单文件路径 → 仍沿用其所在目录（尊重历史位置）
+        _raw_dir = (
+            os.path.dirname(os.path.abspath(_legacy))
+            if str(_legacy).endswith(".db")
+            else _legacy
+        )
+if not _raw_dir:
+    _raw_dir = "./data/whofindme"
 DATA_DIR: str = _raw_dir
 
 # 记录保留天数，超过则自动删除（默认 7 天）
