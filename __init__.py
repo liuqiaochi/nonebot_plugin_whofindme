@@ -232,12 +232,20 @@ async def _who(bot: Bot, event: GroupMessageEvent) -> None:
             summary += f"（以下仅显示最近的 {len(rows)} 条）"
 
         if USE_FORWARD:
+            # 第一次：原图合并转发
             try:
-                nodes = _build_nodes(bot_qq, summary, rows)
+                nodes = _build_nodes(bot_qq, summary, rows, simplify=False)
                 await _send_forward(bot, event.group_id, nodes)
                 return
-            except Exception as exc:  # 合并转发失败，回退纯文本
-                print(f"[whofindme] 合并转发失败，回退纯文本消息: {exc}")
+            except Exception as exc:  # 原图转发失败（多半是图片下载超时）
+                print(f"[whofindme] 合并转发(原图)失败，尝试以[图片]文本简化转发: {exc}")
+                # 第二次：把图片降级为纯文本 "[图片]" 再试一次合并转发
+                try:
+                    nodes2 = _build_nodes(bot_qq, summary, rows, simplify=True)
+                    await _send_forward(bot, event.group_id, nodes2)
+                    return
+                except Exception as exc2:
+                    print(f"[whofindme] 合并转发(简化)失败，回退纯文本消息: {exc2}")
 
         # 回退：单条纯文本消息（图片以链接形式附带，避免图片下载导致超时）
         await who_matcher.finish(_build_plain(summary, rows))
@@ -276,9 +284,19 @@ def _safe_images(images_json: str) -> List[str]:
 
 
 def _build_nodes(
-    bot_qq: int, summary: str, rows: List[Tuple[str, int, str, str, int]]
+    bot_qq: int,
+    summary: str,
+    rows: List[Tuple[str, int, str, str, int]],
+    simplify: bool = False,
 ) -> List[MessageSegment]:
-    """构造合并转发节点列表。"""
+    """构造合并转发节点列表。
+
+    simplify=True 时：图片以纯文本 "[图片]" 呈现（不触发图片下载，规避
+    NapCat/NTQQ 合并转发下载图片超时），文本内容照常。用于合并转发原图
+    失败后的二次尝试。
+    注：当前数据模型仅持久化文本与图片，其他消息段类型（表情/语音/文件等）
+    在记录时未保存，故简化版中不会出现 "[其他]"。
+    """
     nodes: List[MessageSegment] = [
         MessageSegment.node_custom(user_id=bot_qq, nickname="查询汇总", content=summary)
     ]
@@ -288,8 +306,10 @@ def _build_nodes(
         if text:
             content += MessageSegment.text(text + "\n")
         for url in _safe_images(images_json):
-            # 合并转发中只渲染 http(s) 图片，本地路径/异常地址无法在转发里展示
-            if url.startswith(("http://", "https://")):
+            if simplify:
+                # 纯文本占位，不下载图片，避免转发时图片下载超时
+                content += MessageSegment.text("[图片]\n")
+            elif url.startswith(("http://", "https://")):
                 content += MessageSegment.image(url)
         nodes.append(
             MessageSegment.node_custom(
