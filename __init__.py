@@ -63,7 +63,8 @@ async def _cleanup_loop() -> None:
             before = int(time.time()) - KEEP_DAYS * 86400
             await db.delete_old(before)
         except Exception as exc:  # noqa: BLE001
-            print(f"[whofindme] 清理旧记录失败: {exc}")
+            # print(f"[whofindme] 清理旧记录失败: {exc}")  # 调试日志（暂关闭）
+            pass  # 清理失败仅记录于异常，不抛出以免影响主流程
 
 
 # --------------------------------------------------------------------------- #
@@ -158,15 +159,15 @@ async def _record(event: GroupMessageEvent) -> None:
             except Exception:  # noqa: BLE001
                 reply_at_qq = []
 
-    # 调试：把真实结构摊开，便于定位 NapCat 把 at/reply 放在哪
-    seg_types = [s.type for s in event.message]
-    print(
-        f"[whofindme][record] group={event.group_id} sender={event.user_id} "
-        f"has_reply={has_reply} msg_at={len(msg_at_qq)} raw_at={len(raw_at_qq)} "
-        f"reply_at={len(reply_at_qq)}"
-    )
-    print(f"[whofindme][record] message段类型列表={seg_types}")
-    print(f"[whofindme][record] raw_message(前120)={raw[:120]!r}")
+    # 调试：把真实结构摊开，便于定位 NapCat 把 at/reply 放在哪（暂关闭）
+    # seg_types = [s.type for s in event.message]
+    # print(
+    #     f"[whofindme][record] group={event.group_id} sender={event.user_id} "
+    #     f"has_reply={has_reply} msg_at={len(msg_at_qq)} raw_at={len(raw_at_qq)} "
+    #     f"reply_at={len(reply_at_qq)}"
+    # )
+    # print(f"[whofindme][record] message段类型列表={seg_types}")
+    # print(f"[whofindme][record] raw_message(前120)={raw[:120]!r}")
 
     # 合并三个来源的 @ 对象，忽略 @全体 与 @机器人
     targets: set[int] = set()
@@ -180,12 +181,12 @@ async def _record(event: GroupMessageEvent) -> None:
         src_parts.append(f"raw={raw_at_qq}")
     if reply_at_qq:
         src_parts.append(f"reply={reply_at_qq}")
-    print(
-        f"[whofindme][record] 合并 @对象 targets={targets} "
-        f"（来源：{', '.join(src_parts) or '无'}）"
-    )
+    # print(
+    #     f"[whofindme][record] 合并 @对象 targets={targets} "
+    #     f"（来源：{', '.join(src_parts) or '无'}）"
+    # )
     if not targets:
-        print("[whofindme][record] 无有效 @对象，跳过")
+        # print("[whofindme][record] 无有效 @对象，跳过")  # 调试日志（暂关闭）
         return
 
     # 仅记录发送人当前携带的内容（文本 + 图片）
@@ -223,11 +224,11 @@ async def _record(event: GroupMessageEvent) -> None:
             reply_sender_name=reply_sender_name,
             reply_content=reply_content,
         )
-    print(
-        f"[whofindme][record] 已记录 {len(targets)} 条 "
-        f"(text_len={len(text)}, img_count={len(images)}, "
-        f"引用内容={'已保存' if reply_content else '无'})"
-    )
+    # print(
+    #     f"[whofindme][record] 已记录 {len(targets)} 条 "
+    #     f"(text_len={len(text)}, img_count={len(images)}, "
+    #     f"引用内容={'已保存' if reply_content else '无'})"
+    # )
 
 
 # --------------------------------------------------------------------------- #
@@ -286,21 +287,22 @@ async def _who(bot: Bot, event: GroupMessageEvent) -> None:
                 await _send_forward(bot, event.group_id, nodes)
                 return
             except Exception as exc:  # 原图转发失败（多半是图片下载超时）
-                print(f"[whofindme] 合并转发(原图)失败，尝试以[图片]文本简化转发: {exc}")
+                # print(f"[whofindme] 合并转发(原图)失败，尝试以[图片]文本简化转发: {exc}")  # 调试日志（暂关闭）
                 # 第二次：把图片降级为纯文本 "[图片]" 再试一次合并转发
                 try:
                     nodes2 = _build_nodes(bot_qq, summary, rows, simplify=True)
                     await _send_forward(bot, event.group_id, nodes2)
                     return
                 except Exception as exc2:
-                    print(f"[whofindme] 合并转发(简化)失败，回退纯文本消息: {exc2}")
+                    # print(f"[whofindme] 合并转发(简化)失败，回退纯文本消息: {exc2}")  # 调试日志（暂关闭）
+                    pass  # 简化转发也失败 → 落到下方纯文本回退
 
         # 回退：单条纯文本消息（图片以链接形式附带，避免图片下载导致超时）
         await who_matcher.finish(_build_plain(summary, rows))
     except (FinishedException, PausedException, RejectedException):
         raise  # finish/pause/reject 是正常的控制流信号，必须放行，否则会重复发送
     except Exception as exc:  # 其它意外才优雅降级，绝不裸崩
-        print(f"[whofindme] 查询异常，已降级: {exc}")
+        # print(f"[whofindme] 查询异常，已降级: {exc}")  # 调试日志（暂关闭）
         await who_matcher.finish("查询时出现异常，请稍后重试。")
 
 
